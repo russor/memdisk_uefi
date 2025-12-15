@@ -1,4 +1,7 @@
 #include <Uefi.h>
+#include <IndustryStandard/Acpi61.h>
+#include <Protocol/AcpiSystemDescriptionTable.h>
+#include <Protocol/AcpiTable.h>
 #include <Protocol/DevicePath.h>
 #include <Protocol/DevicePathToText.h>
 #include <Protocol/DevicePathUtilities.h>
@@ -13,6 +16,9 @@ bool gDownloading = false;
 UINTN gDownloadSize = 0;
 UINTN gDownloadProgress = 0;
 UINTN gDownloadProgressAmount = 0;
+EFI_GUID gDownloadType = EFI_VIRTUAL_DISK_GUID; // ??? EFI_VIRTUAL_CD_GUID;
+
+
 EFI_PHYSICAL_ADDRESS gDownloadBuffer;
 EFI_STATUS gDownloadStatus = EFI_SUCCESS;
 EFI_SYSTEM_TABLE *ST;
@@ -72,7 +78,7 @@ EFI_STATUS download_data (IN VOID *Context, IN VOID *Buffer, IN UINTN BufferLeng
         if (gDownloadSize & 4095) {
             ++pages;
         }
-        status = BS->AllocatePages(AllocateAnyPages, EfiRuntimeServicesData, pages, &gDownloadBuffer);
+        status = BS->AllocatePages(AllocateAnyPages, EfiReservedMemoryType, pages, &gDownloadBuffer);
         if (EFI_ERROR (status)) {
             print_str(L"Couldn't allocate pages for download\r\n");
             gDownloadStatus = status;
@@ -129,6 +135,120 @@ int device_path_prefix_match(EFI_DEVICE_PATH_PROTOCOL *prefix, EFI_DEVICE_PATH_P
     return device_path_prefix_match_impl((UINT8 *) prefix, (UINT8 *) full);
 }
 
+// CalculateSum8 and CalculateCheckSum8 taken from edk2/MdePkg/Library/BaseLib/CheckSum.c
+//  Copyright (c) 2007 - 2018, Intel Corporation. All rights reserved.
+//  Copyright (c) 2022, Pedro Falcato. All rights reserved.<BR>
+//  SPDX-License-Identifier: BSD-2-Clause-Patent
+UINT8
+EFIAPI
+CalculateSum8 (
+  IN      CONST UINT8  *Buffer,
+  IN      UINTN        Length
+  )
+{
+  UINT8  Sum;
+  UINTN  Count;
+
+  for (Sum = 0, Count = 0; Count < Length; Count++) {
+    Sum = (UINT8)(Sum + *(Buffer + Count));
+  }
+
+  return Sum;
+}
+UINT8
+EFIAPI
+CalculateCheckSum8 (
+  IN      CONST UINT8  *Buffer,
+  IN      UINTN        Length
+  )
+{
+  UINT8  CheckSum;
+
+  CheckSum = CalculateSum8 (Buffer, Length);
+
+  //
+  // Return the checksum based on 2's complement.
+  //
+  return (UINT8)(0x100 - CheckSum);
+}
+
+
+// This function purloined from edk2/MdeModulePkg/Universal/Disk/RamDiskDxe/RamDiskProtocol.c
+// Mostly taken from RamDiskPublishNfit and RamDiskPublishSsdt
+//   Copyright (c) 2016 - 2019, Intel Corporation. All rights reserved.
+//  (C) Copyright 2016 Hewlett Packard Enterprise Development LP
+//   Copyright (c) Microsoft Corporation.
+//  SPDX-License-Identifier: BSD-2-Clause-Patent
+
+void setup_nvdimm_table(EFI_ACPI_TABLE_PROTOCOL *acpi_table) {
+    // The System Descriptor Table Protocol is part of the Platform Initialization (PI) spec
+    // it's not available by the time we're running, so we're just going to skip that and assume
+    // there's no NVDIMM root device.
+    
+    // Skip RamDiskPublishSsdt?
+    
+    EFI_STATUS Status;
+    EFI_ACPI_DESCRIPTION_HEADER *NfitHeader;
+    EFI_ACPI_6_1_NFIT_SYSTEM_PHYSICAL_ADDRESS_RANGE_STRUCTURE *SpaRange;
+    VOID *Nfit;
+    UINT32 NfitLen;
+    UINT64 CurrentData;
+    UINT8 Checksum;
+    UINTN TableKey;
+    
+    
+    NfitLen = sizeof (EFI_ACPI_6_1_NVDIMM_FIRMWARE_INTERFACE_TABLE) +
+              sizeof (EFI_ACPI_6_1_NFIT_SYSTEM_PHYSICAL_ADDRESS_RANGE_STRUCTURE);
+    Status = BS->AllocatePool (EfiACPIReclaimMemory, NfitLen, &Nfit);
+    if (EFI_ERROR(Status)) {
+        print_str(L"setup_nvdimm_table: couldn't allocate\r\n");
+        return;
+    }
+    
+
+    SpaRange = (EFI_ACPI_6_1_NFIT_SYSTEM_PHYSICAL_ADDRESS_RANGE_STRUCTURE *)
+               ((UINT8 *)Nfit + sizeof (EFI_ACPI_6_1_NVDIMM_FIRMWARE_INTERFACE_TABLE));
+
+    NfitHeader                  = (EFI_ACPI_DESCRIPTION_HEADER *)Nfit;
+    NfitHeader->Signature       = EFI_ACPI_6_1_NVDIMM_FIRMWARE_INTERFACE_TABLE_STRUCTURE_SIGNATURE;
+    NfitHeader->Length          = NfitLen;
+    NfitHeader->Revision        = EFI_ACPI_6_1_NVDIMM_FIRMWARE_INTERFACE_TABLE_REVISION;
+    NfitHeader->Checksum        = 0;
+    NfitHeader->OemRevision     = 0;
+    NfitHeader->CreatorId       = 0;
+    NfitHeader->CreatorRevision = 0;
+    CurrentData                 = 0x204b5349444d454d; // "MEMDISK "
+    BS->CopyMem (NfitHeader->OemId, "UNKN", sizeof (NfitHeader->OemId));
+    BS->CopyMem (&NfitHeader->OemTableId, &CurrentData, sizeof (UINT64));
+
+    //
+    // Fill in the content of the SPA Range Structure.
+    //
+    SpaRange->Type                             = EFI_ACPI_6_1_NFIT_SYSTEM_PHYSICAL_ADDRESS_RANGE_STRUCTURE_TYPE;
+    SpaRange->Length                           = sizeof (EFI_ACPI_6_1_NFIT_SYSTEM_PHYSICAL_ADDRESS_RANGE_STRUCTURE);
+    SpaRange->SystemPhysicalAddressRangeBase   = gDownloadBuffer;
+    SpaRange->SystemPhysicalAddressRangeLength = gDownloadSize;
+    BS->CopyMem(&SpaRange->AddressRangeTypeGUID, &gDownloadType, sizeof(EFI_GUID));
+
+    Checksum             = CalculateCheckSum8 ((UINT8 *)Nfit, NfitHeader->Length);
+    NfitHeader->Checksum = Checksum;
+    
+    //
+    // Publish the NFIT to the ACPI table.
+    // Note, since the NFIT might be modified by other driver, therefore, we
+    // do not track the returning TableKey from the InstallAcpiTable().
+    //
+    Status = acpi_table->InstallAcpiTable (acpi_table,
+                                           Nfit, NfitHeader->Length,
+                                           &TableKey);
+    if (EFI_ERROR(Status)) {
+        print_str(L"Couldn't add NFIT table\r\n");
+    } else {
+        print_str(L"Table added!\r\n");
+    }
+}
+
+
 EFI_STATUS efi_main(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE *SystemTable)
 {
     EFI_STATUS Status = 0;
@@ -175,6 +295,25 @@ EFI_STATUS efi_main(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE *SystemTable)
     EFI_DEVICE_PATH_PROTOCOL *boot_file_node = dev_path_utils->CreateDeviceNode(
                 MEDIA_DEVICE_PATH, MEDIA_FILEPATH_DP, SIZE_OF_FILEPATH_DEVICE_PATH + sizeof(EFI_REMOVABLE_MEDIA_FILE_NAME));
     BS->CopyMem((void *) boot_file_node + sizeof(EFI_DEVICE_PATH_PROTOCOL), (void *)EFI_REMOVABLE_MEDIA_FILE_NAME, sizeof(EFI_REMOVABLE_MEDIA_FILE_NAME));
+
+
+    int add_table = 0;
+    EFI_GUID acpitableGuid = EFI_ACPI_TABLE_PROTOCOL_GUID;
+    EFI_ACPI_TABLE_PROTOCOL *acpi_table;
+    Status = BS->LocateProtocol (&acpitableGuid, NULL, (void**)&acpi_table);
+    if (EFI_ERROR (Status)) {
+        print_str(L"Couldn't open ACPI Table protocol, NVDIMM will not work\r\n");
+    } else {
+        EFI_GUID acpiSDTGuid = EFI_ACPI_SDT_PROTOCOL_GUID;
+        EFI_ACPI_SDT_PROTOCOL *acpi_sdt;
+        Status = BS->LocateProtocol (&acpiSDTGuid, NULL, (void**)&acpi_sdt);
+        if (EFI_ERROR (Status)) {
+            add_table = 1;
+            print_str(L"Couldn't open ACPI SDT protocol, memdisk_uefi will add NFIT table\r\n");
+        } else {
+            print_str(L"Relying on MemDiskProtocol to add ACPI NFIT\r\n");
+        }
+    }
 
     CHAR16* uri = loaded_image->LoadOptions;
     if (uri == NULL) {
@@ -235,7 +374,7 @@ EFI_STATUS efi_main(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE *SystemTable)
     EFI_DEVICE_PATH_PROTOCOL *ram_disk_path;
     EFI_GUID virtualdiskGuid = EFI_VIRTUAL_DISK_GUID;
 //    EFI_GUID virtualdiskGuid = EFI_VIRTUAL_CD_GUID;
-    Status = ram_disk->Register(gDownloadBuffer, gDownloadSize, &virtualdiskGuid, NULL, &ram_disk_path);
+    Status = ram_disk->Register(gDownloadBuffer, gDownloadSize, &gDownloadType, NULL, &ram_disk_path);
     if (EFI_ERROR(Status)) {
         print_str(L"ram disk register failed\r\n");
         return Status;
@@ -244,6 +383,12 @@ EFI_STATUS efi_main(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE *SystemTable)
         print_dev(ram_disk_path);
         print_str(L"\r\n");
     }
+    
+    if (add_table) {
+        print_str(L"Adding ACPI NFIT (nvdimm) table, since RamDiskProtocol won't\r\n");
+        setup_nvdimm_table(acpi_table);
+    }
+    
 
     EFI_HANDLE *handles;
     UINTN count = 0;
@@ -288,13 +433,6 @@ EFI_STATUS efi_main(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE *SystemTable)
                 print_str(L" Open volume failed\r\n");
                 continue;
             }
-            
-            /*EFI_FILE_PROTOCOL *file;
-            Status = root->Open(root, &file, EFI_REMOVABLE_MEDIA_FILE_NAME, EFI_FILE_MODE_READ, 0);
-            if (EFI_ERROR(Status)) {
-                print_str(L" Couldn't open boot file\r\n");
-                continue;
-            }*/
             
             boot_path = dev_path_utils->AppendDeviceNode(device_path, boot_file_node);
             print_str(L" trying to load\r\n");
