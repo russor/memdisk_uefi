@@ -1,0 +1,10 @@
+*) determine cause of gpart crash in FreeBSD installer
+
+*) build and test on platforms other than amd64
+
+*) consider detecting or allow parameter passing 
+
+*) reformat code
+
+*) build instructions
+

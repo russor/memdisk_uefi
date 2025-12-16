@@ -1,3 +1,5 @@
+// Copyright 2025 Richard Russo
+// SPDX-License-Identifier: BSD-2-Clause-Patent
 #include <Uefi.h>
 #include <IndustryStandard/Acpi61.h>
 #include <Protocol/AcpiSystemDescriptionTable.h>
