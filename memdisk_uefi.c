@@ -75,10 +75,12 @@ EFI_STATUS download_data (IN VOID *Context, IN VOID *Buffer, IN UINTN BufferLeng
     if (gDownloadSize == 0 && BufferLength == 0) {
         gDownloadSize = FileOffset;
         gDownloadProgressAmount = FileOffset / 20;
-        UINTN pages = gDownloadSize >> 12;
+        // Round size to an even number of 4096 Pages
         if (gDownloadSize & 4095) {
-            ++pages;
+            gDownloadSize = (gDownloadSize & ~4095) + 4096;
         }
+
+        UINTN pages = gDownloadSize >> 12;
         status = BS->AllocatePages(AllocateAnyPages, EfiReservedMemoryType, pages, &gDownloadBuffer);
         if (EFI_ERROR (status)) {
             print_str(L"Couldn't allocate pages for download\r\n");
@@ -240,6 +242,7 @@ void setup_nvdimm_table(EFI_ACPI_TABLE_PROTOCOL *acpi_table) {
     SpaRange->SystemPhysicalAddressRangeBase   = gDownloadBuffer;
     SpaRange->SystemPhysicalAddressRangeLength = gDownloadSize;
     BS->CopyMem(&SpaRange->AddressRangeTypeGUID, &gDownloadType, sizeof(EFI_GUID));
+    SpaRange->AddressRangeMemoryMappingAttribute = EFI_MEMORY_WB;
 
     Checksum             = CalculateCheckSum8 ((UINT8 *)Nfit, NfitHeader->Length);
     NfitHeader->Checksum = Checksum;
