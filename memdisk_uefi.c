@@ -12,6 +12,8 @@
 #define FILE_LICENCE(X)
 #include <ipxe/efi/efi_download.h>
 
+#include "RamDisk.hex"
+
 bool gDownloading = false;
 UINTN gDownloadSize = 0;
 UINTN gDownloadProgress = 0;
@@ -23,7 +25,6 @@ EFI_PHYSICAL_ADDRESS gDownloadBuffer;
 EFI_STATUS gDownloadStatus = EFI_SUCCESS;
 EFI_SYSTEM_TABLE *ST;
 EFI_BOOT_SERVICES *BS;
-
 
 void * memset(void *dest, int c, size_t len) {
     BS->SetMem(dest, len, c);
@@ -84,6 +85,7 @@ EFI_STATUS download_data (IN VOID *Context, IN VOID *Buffer, IN UINTN BufferLeng
             gDownloadStatus = status;
             gDownloading = false;
         }
+        BS->SetMem((void *)gDownloadBuffer, pages << 12, 0);
    } else if (FileOffset + BufferLength > gDownloadSize) {
         print_str(L"Download buffer extends beyond allocated buffer\r\n");
         print_str(L"FileOffset: "); print_num(FileOffset);
@@ -185,17 +187,25 @@ void setup_nvdimm_table(EFI_ACPI_TABLE_PROTOCOL *acpi_table) {
     // it's not available by the time we're running, so we're just going to skip that and assume
     // there's no NVDIMM root device.
     
-    // Skip RamDiskPublishSsdt?
-    
+    UINTN TableKey;
     EFI_STATUS Status;
+
+    // Add SSDT for NVDIMM root device
+    Status = acpi_table->InstallAcpiTable (acpi_table,
+                                           ramdisk_aml_code, sizeof(ramdisk_aml_code),
+                                           &TableKey);
+    if (EFI_ERROR(Status)) {
+        print_str(L"Couldn't add SSDT table\r\n");
+    } else {
+        print_str(L"SSDT Table added!\r\n");
+    }
+
     EFI_ACPI_DESCRIPTION_HEADER *NfitHeader;
     EFI_ACPI_6_1_NFIT_SYSTEM_PHYSICAL_ADDRESS_RANGE_STRUCTURE *SpaRange;
     VOID *Nfit;
     UINT32 NfitLen;
     UINT64 CurrentData;
     UINT8 Checksum;
-    UINTN TableKey;
-    
     
     NfitLen = sizeof (EFI_ACPI_6_1_NVDIMM_FIRMWARE_INTERFACE_TABLE) +
               sizeof (EFI_ACPI_6_1_NFIT_SYSTEM_PHYSICAL_ADDRESS_RANGE_STRUCTURE);
@@ -204,7 +214,7 @@ void setup_nvdimm_table(EFI_ACPI_TABLE_PROTOCOL *acpi_table) {
         print_str(L"setup_nvdimm_table: couldn't allocate\r\n");
         return;
     }
-    
+    BS->SetMem(Nfit, NfitLen, 0);
 
     SpaRange = (EFI_ACPI_6_1_NFIT_SYSTEM_PHYSICAL_ADDRESS_RANGE_STRUCTURE *)
                ((UINT8 *)Nfit + sizeof (EFI_ACPI_6_1_NVDIMM_FIRMWARE_INTERFACE_TABLE));
@@ -218,7 +228,7 @@ void setup_nvdimm_table(EFI_ACPI_TABLE_PROTOCOL *acpi_table) {
     NfitHeader->CreatorId       = 0;
     NfitHeader->CreatorRevision = 0;
     CurrentData                 = 0x204b5349444d454d; // "MEMDISK "
-    BS->CopyMem (NfitHeader->OemId, "UNKN", sizeof (NfitHeader->OemId));
+    BS->CopyMem (NfitHeader->OemId, "MEMDSK", sizeof (NfitHeader->OemId));
     BS->CopyMem (&NfitHeader->OemTableId, &CurrentData, sizeof (UINT64));
 
     //
@@ -226,6 +236,7 @@ void setup_nvdimm_table(EFI_ACPI_TABLE_PROTOCOL *acpi_table) {
     //
     SpaRange->Type                             = EFI_ACPI_6_1_NFIT_SYSTEM_PHYSICAL_ADDRESS_RANGE_STRUCTURE_TYPE;
     SpaRange->Length                           = sizeof (EFI_ACPI_6_1_NFIT_SYSTEM_PHYSICAL_ADDRESS_RANGE_STRUCTURE);
+    
     SpaRange->SystemPhysicalAddressRangeBase   = gDownloadBuffer;
     SpaRange->SystemPhysicalAddressRangeLength = gDownloadSize;
     BS->CopyMem(&SpaRange->AddressRangeTypeGUID, &gDownloadType, sizeof(EFI_GUID));
@@ -244,7 +255,7 @@ void setup_nvdimm_table(EFI_ACPI_TABLE_PROTOCOL *acpi_table) {
     if (EFI_ERROR(Status)) {
         print_str(L"Couldn't add NFIT table\r\n");
     } else {
-        print_str(L"Table added!\r\n");
+        print_str(L"NFIT Table added!\r\n");
     }
 }
 
