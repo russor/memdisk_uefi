@@ -10,3 +10,5 @@ memdisk_uefi.o: memdisk_uefi.c memdisk.h
 from_edk.o: from_edk.c RamDisk.hex
 	clang $(CFLAGS) -c -o $@ $<
 
+clean:
+	rm *.o *.elf
