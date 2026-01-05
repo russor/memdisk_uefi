@@ -46,8 +46,7 @@ You can also add arguments after the image URI to change behavior:
 | harddisk | setup UEFI RamDisk as a Virtual Hard Disk (default) |
 | iso | setup UEFI RamDisk as a Virtual CD-ROM |
 | pause | Wait for a keypress before booting |
-| bootonly | Setup the UEFI RamDisk, but use BootServices memory and don't
-setup the ACPI tables |
+| bootonly | Setup the UEFI RamDisk, but use BootServices memory and don't setup the ACPI tables |
 
 The arguments harddisk, iso, and pause are used for the same purpose in
 Syslinux's MEMDISK.
