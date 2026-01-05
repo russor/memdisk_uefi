@@ -12,13 +12,11 @@
 #define FILE_LICENCE(X)
 #include <ipxe/efi/efi_download.h>
 
-
 bool gDownloading = false;
 UINTN gDownloadSize = 0;
 UINTN gDownloadProgress = 0;
 UINTN gDownloadProgressAmount = 0;
 EFI_GUID gDownloadType = EFI_VIRTUAL_DISK_GUID; // ??? EFI_VIRTUAL_CD_GUID;
-
 
 EFI_PHYSICAL_ADDRESS gDownloadBuffer;
 EFI_STATUS gDownloadStatus = EFI_SUCCESS;
@@ -116,7 +114,6 @@ void download_finish(IN VOID *Context, IN EFI_STATUS Status) {
     gDownloadStatus = Status;
 }
 
-
 int device_path_prefix_match_impl(UINT8 *prefix, UINT8 *full) {
     while (1) {
         UINT16 length = prefix[2] | (prefix[3] >> 8);
@@ -184,7 +181,6 @@ EFI_STATUS efi_main(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE *SystemTable)
     EFI_DEVICE_PATH_PROTOCOL *boot_file_node = dev_path_utils->CreateDeviceNode(
                 MEDIA_DEVICE_PATH, MEDIA_FILEPATH_DP, SIZE_OF_FILEPATH_DEVICE_PATH + sizeof(EFI_REMOVABLE_MEDIA_FILE_NAME));
     BS->CopyMem((void *) boot_file_node + sizeof(EFI_DEVICE_PATH_PROTOCOL), (void *)EFI_REMOVABLE_MEDIA_FILE_NAME, sizeof(EFI_REMOVABLE_MEDIA_FILE_NAME));
-
 
     int add_table = 0;
     EFI_GUID acpitableGuid = EFI_ACPI_TABLE_PROTOCOL_GUID;
