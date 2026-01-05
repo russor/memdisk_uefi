@@ -16,7 +16,8 @@ bool gDownloading = false;
 UINTN gDownloadSize = 0;
 UINTN gDownloadProgress = 0;
 UINTN gDownloadProgressAmount = 0;
-EFI_GUID gDownloadType = EFI_VIRTUAL_DISK_GUID; // ??? EFI_VIRTUAL_CD_GUID;
+// default memory type is Reserved so that the disk survives beyond OS start
+EFI_MEMORY_TYPE gMemType = EfiReservedMemoryType;
 
 EFI_PHYSICAL_ADDRESS gDownloadBuffer;
 EFI_STATUS gDownloadStatus = EFI_SUCCESS;
@@ -26,6 +27,16 @@ EFI_BOOT_SERVICES *BS;
 void * memset(void *dest, int c, size_t len) {
     BS->SetMem(dest, len, c);
     return dest;
+}
+
+int lstreq(const CHAR16 *s1, const CHAR16 *s2) {
+    if (*s1 != *s2) {
+        return 0;
+    } else if (*s1 == 0 && *s2 == 0) {
+        return 1;
+    } else {
+        return lstreq(s1 + 1, s2 + 1);
+    }
 }
 
 EFI_STATUS print_str(CHAR16 * str) {
@@ -78,7 +89,7 @@ EFI_STATUS download_data (IN VOID *Context, IN VOID *Buffer, IN UINTN BufferLeng
         }
 
         UINTN pages = gDownloadSize >> 12;
-        status = BS->AllocatePages(AllocateAnyPages, EfiReservedMemoryType, pages, &gDownloadBuffer);
+        status = BS->AllocatePages(AllocateAnyPages, gMemType, pages, &gDownloadBuffer);
         if (EFI_ERROR (status)) {
             print_str(L"Couldn't allocate pages for download\r\n");
             gDownloadStatus = status;
@@ -182,57 +193,93 @@ EFI_STATUS efi_main(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE *SystemTable)
                 MEDIA_DEVICE_PATH, MEDIA_FILEPATH_DP, SIZE_OF_FILEPATH_DEVICE_PATH + sizeof(EFI_REMOVABLE_MEDIA_FILE_NAME));
     BS->CopyMem((void *) boot_file_node + sizeof(EFI_DEVICE_PATH_PROTOCOL), (void *)EFI_REMOVABLE_MEDIA_FILE_NAME, sizeof(EFI_REMOVABLE_MEDIA_FILE_NAME));
 
-    int add_table = 0;
-    EFI_GUID acpitableGuid = EFI_ACPI_TABLE_PROTOCOL_GUID;
-    EFI_ACPI_TABLE_PROTOCOL *acpi_table;
-    Status = BS->LocateProtocol (&acpitableGuid, NULL, (void**)&acpi_table);
-    if (EFI_ERROR (Status)) {
-        print_str(L"Couldn't open ACPI Table protocol, NVDIMM will not work\r\n");
-    } else {
-        EFI_GUID acpiSDTGuid = EFI_ACPI_SDT_PROTOCOL_GUID;
-        EFI_ACPI_SDT_PROTOCOL *acpi_sdt;
-        Status = BS->LocateProtocol (&acpiSDTGuid, NULL, (void**)&acpi_sdt);
-        if (EFI_ERROR (Status)) {
-            add_table = 1;
-            print_str(L"Couldn't open ACPI SDT protocol, memdisk_uefi will add NFIT table\r\n");
-        } else {
-            print_str(L"Relying on MemDiskProtocol to add ACPI NFIT\r\n");
-        }
-    }
+    bool add_table = true;
 
-    CHAR16* uri = loaded_image->LoadOptions;
-    if (uri == NULL) {
+    CHAR16* load_options = loaded_image->LoadOptions;
+    if (load_options == NULL) {
         print_str(L"image LoadOptions is null\r\n");
         return -1;
     }
     
-    if (uri[loaded_image->LoadOptionsSize / sizeof(uri[0]) -1] != 0) {
+    if (load_options[loaded_image->LoadOptionsSize / sizeof(load_options[0]) -1] != 0) {
         print_str(L"image LoadOptions is not null terminated\r\n");
         return -1;
     }
     
-    while (*uri != L' ' && *uri != 0)  {
-      ++uri;
+    while (*load_options != L' ' && *load_options != 0)  {
+      ++load_options;
     }
-    if (*uri == L' ') {
-        ++uri;
+    if (*load_options == L' ') {
+        ++load_options;
     } else {
-        print_str(L"Did not find uri; sad sad\r\n");
+        print_str(L"Did not find load_options; sad sad\r\n");
         return -1;
     }
     
     CHAR8 clean_uri[256] = {0};
     size_t i = 0;
     
-    while (*uri != L' ' && *uri != 0 && i < sizeof(clean_uri) - 1) {
-        if (*uri > L' ' && *uri <= L'~' && (*uri & ~0x7f) == 0) {
-            clean_uri[i] = *uri & 0x7f;
+    while (*load_options != L' ' && *load_options != 0 && i < sizeof(clean_uri) - 1) {
+        if (*load_options > L' ' && *load_options <= L'~' && (*load_options & ~0x7f) == 0) {
+            clean_uri[i] = *load_options & 0x7f;
         } else {
             print_str(L"invalid character in uri\r\n");
             return -1;
         }
-        ++uri;
+        ++load_options;
         ++i;
+    }
+
+    bool pause_before_boot = false;
+    EFI_GUID download_type = EFI_VIRTUAL_DISK_GUID;
+    EFI_GUID virtual_disk_guid = EFI_VIRTUAL_DISK_GUID;
+    EFI_GUID virtual_cd_guid = EFI_VIRTUAL_CD_GUID;
+
+    while (*load_options != 0) {
+        while (*load_options == L' ') { ++load_options; }
+        CHAR16* current_option = load_options;
+        while (*load_options != L' ' && *load_options != 0) { ++load_options;}
+        int was_space = (*load_options == L' ');
+        *load_options = 0;
+        if (lstreq(L"harddisk", current_option)) {
+            BS->CopyMem(&download_type, &virtual_disk_guid, sizeof(download_type));
+        } else if (lstreq(L"iso", current_option)) {
+            BS->CopyMem(&download_type, &virtual_cd_guid, sizeof(download_type));
+        } else if (lstreq(L"pause", current_option)) {
+            pause_before_boot = true;
+        } else if (lstreq(L"bootonly", current_option)) {
+            // The memdisk isn't desired beyond when the OS exits UEFI boot
+            // services. If this memoryType doesn't work out, because the OS loader
+            // trashes it before exiting boot services, EfiACPIReclaimMemory may work better.
+            gMemType = EfiBootServicesData;
+            add_table = false;
+        } else if (*current_option != 0) {
+            print_str(L"unknown argument: ");
+            print_str(current_option);
+            print_str(L"\r\n");
+        }
+        if (was_space) {
+            ++load_options;
+        }
+    }
+
+    EFI_ACPI_TABLE_PROTOCOL *acpi_table;
+    if (add_table) {
+        EFI_GUID acpitableGuid = EFI_ACPI_TABLE_PROTOCOL_GUID;
+        Status = BS->LocateProtocol (&acpitableGuid, NULL, (void**)&acpi_table);
+        if (EFI_ERROR (Status)) {
+            print_str(L"Couldn't open ACPI Table protocol, NVDIMM will not work\r\n");
+        } else {
+            EFI_GUID acpiSDTGuid = EFI_ACPI_SDT_PROTOCOL_GUID;
+            EFI_ACPI_SDT_PROTOCOL *acpi_sdt;
+            Status = BS->LocateProtocol (&acpiSDTGuid, NULL, (void**)&acpi_sdt);
+            if (EFI_ERROR (Status)) {
+                add_table = true;
+                print_str(L"Couldn't open ACPI SDT protocol, memdisk_uefi will add NFIT table\r\n");
+            } else {
+                print_str(L"Relying on MemDiskProtocol to add ACPI NFIT\r\n");
+            }
+        }
     }
 
     gDownloading = true;
@@ -257,9 +304,7 @@ EFI_STATUS efi_main(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE *SystemTable)
     }
 
     EFI_DEVICE_PATH_PROTOCOL *ram_disk_path;
-    EFI_GUID virtualdiskGuid = EFI_VIRTUAL_DISK_GUID;
-//    EFI_GUID virtualdiskGuid = EFI_VIRTUAL_CD_GUID;
-    Status = ram_disk->Register(gDownloadBuffer, gDownloadSize, &gDownloadType, NULL, &ram_disk_path);
+    Status = ram_disk->Register(gDownloadBuffer, gDownloadSize, &download_type, NULL, &ram_disk_path);
     if (EFI_ERROR(Status)) {
         print_str(L"ram disk register failed\r\n");
         return Status;
@@ -269,12 +314,11 @@ EFI_STATUS efi_main(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE *SystemTable)
         print_str(L"\r\n");
     }
     
-    if (add_table) {
+    if (add_table && acpi_table != NULL) {
         print_str(L"Adding ACPI NFIT (nvdimm) table, since RamDiskProtocol won't\r\n");
-        setup_nvdimm_table(acpi_table, gDownloadBuffer, gDownloadSize, gDownloadType);
+        setup_nvdimm_table(acpi_table, gDownloadBuffer, gDownloadSize, download_type);
     }
     
-
     EFI_HANDLE *handles;
     UINTN count = 0;
     
@@ -332,6 +376,20 @@ EFI_STATUS efi_main(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE *SystemTable)
                 continue;
             }
             print_str(L"\r\nloaded\r\n");
+            if (pause_before_boot) {
+                print_str(L"Press a key to boot\r\n");
+                Status = ST->ConIn->Reset(ST->ConIn, FALSE);
+                if (EFI_ERROR(Status)) {
+                    return Status;
+                }
+
+                /* Now wait until a key becomes available.  This is a simple
+                   polling implementation.  You could try and use the WaitForKey
+                   event instead if you like */
+                while ((Status = ST->ConIn->ReadKeyStroke(ST->ConIn, &Key)) == EFI_NOT_READY) {
+                }
+            }
+
             Status = BS->StartImage(boot_image_handle, 0, NULL);
             if (EFI_ERROR(Status)) {
                 print_str(L"StartImage error\r\n");

@@ -1,4 +1,4 @@
-#memdisk_uefi
+# memdisk_uefi
 > Memdisk_UEFI allows PXE booting of disk images under UEFI
 
 Memdisk_UEFI takes a single command line argument which is the path to the
@@ -39,6 +39,30 @@ iPXE will load the memdisk_uefi.efi binary from the current directory and
 pass the image URI as a command line argument.  If there are any errors that
 prevent booting, the prompt will allow you to read them.
 
+You can also add arguments after the image URI to change behavior:
+
+| parameter | behavior |
+| --- | --- |
+| harddisk | setup UEFI RamDisk as a Virtual Hard Disk (default) |
+| iso | setup UEFI RamDisk as a Virtual CD-ROM |
+| pause | Wait for a keypress before booting |
+| bootonly | Setup the UEFI RamDisk, but use BootServices memory and don't
+setup the ACPI tables |
+
+The arguments harddisk, iso, and pause are used for the same purpose in
+Syslinux's MEMDISK.
+
+bootonly is useful for boot images that load a ramdisk from the UEFI loader
+and don't mount the image after boot. You still end up with the disk image
+loaded in ram twice while the loader is running, but once the OS is running,
+the UEFI RamDisk memory will be available.
+
+For example: ```boot memdisk_uefi.elf ${cwduri}mfsbsd-se-14.2-RELEASE-amd64.iso bootonly pause```
+will boot the listed iso as a virtual hard disk, without registering the
+RamDisk as a NVDIMM; the user will need to press a key to continue after the
+image is loaded.
+
+
 For BIOS boot, PXE booting an installer image is commonly done with
 [MEMDISK](https://wiki.syslinux.org/wiki/index.php?title=MEMDISK) from the
 Syslinux Project
@@ -56,7 +80,6 @@ Additionally, headers and code are used from [EDK
 II](https://github.com/tianocore/edk2/), which have been marked
 SPDX-License-Identifier: BSD-2-Clause-Patent
 
+Some code taken from the [osdev wiki](https://wiki.osdev.org/UEFI_App_Bare_Bones)
+
 All original code is Copyright 2025 Richard Russo, BSD-2-Clause-Patent
-
-
-
