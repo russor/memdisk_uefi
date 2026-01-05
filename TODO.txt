@@ -2,7 +2,9 @@
 
 *) build and test on platforms other than amd64
 
-*) consider detecting or allow parameter passing 
+*) consider integrating decompression? FreeBSD-15.0-RELEASE-amd64-bootonly.iso
+is 4.5x the size of FreeBSD-15.0-RELEASE-amd64-bootonly.iso.xz ... other
+isos don't seem to have as significant of a compression ratio though
 
 *) reformat code
 
